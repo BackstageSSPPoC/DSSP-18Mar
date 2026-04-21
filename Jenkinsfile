@@ -286,183 +286,182 @@
 
 
 pipeline {
-agent any
+    agent any
 
-```
-environment {
-    APP_NAME = "DSSP-18Mar".toLowerCase().trim()
-    DOCKER_IMAGE = "chaitanyapandeygspann/${APP_NAME}"
-    DOCKER_TAG = "1.0.${BUILD_NUMBER}"
-    IMAGE_TAG = "${DOCKER_IMAGE}:${DOCKER_TAG}"
-    GITOPS_REPO = "https://github.com/BackstageSSPPoC/k8s-manifests.git"
-    RUN_MODE = "false"
-}
-
-stages {
-
-    stage('Checkout Code') {
-        steps {
-            checkout scm
-        }
+    environment {
+        APP_NAME = "DSSP-18Mar".toLowerCase().trim()
+        DOCKER_IMAGE = "chaitanyapandeygspann/${APP_NAME}"
+        DOCKER_TAG = "1.0.${BUILD_NUMBER}"
+        IMAGE_TAG = "${DOCKER_IMAGE}:${DOCKER_TAG}"
+        GITOPS_REPO = "https://github.com/BackstageSSPPoC/k8s-manifests.git"
+        RUN_MODE = "false"
     }
-
-    stage('Decide Pipeline Flow') {
-        steps {
-            script {
-
-                def commitMessage = sh(
-                    script: "git log -1 --pretty=%B",
-                    returnStdout: true
-                ).trim()
-
-                echo "Branch: ${env.BRANCH_NAME}"
-                echo "Commit: ${commitMessage}"
-
-                // ❌ Skip template injection
-                if (commitMessage.toLowerCase().contains("skip ci")) {
-                    echo "Skipping template injection commit"
+    
+    stages {
+    
+        stage('Checkout Code') {
+            steps {
+                checkout scm
+            }
+        }
+    
+        stage('Decide Pipeline Flow') {
+            steps {
+                script {
+    
+                    def commitMessage = sh(
+                        script: "git log -1 --pretty=%B",
+                        returnStdout: true
+                    ).trim()
+    
+                    echo "Branch: ${env.BRANCH_NAME}"
+                    echo "Commit: ${commitMessage}"
+    
+                    // ❌ Skip template injection
+                    if (commitMessage.toLowerCase().contains("skip ci")) {
+                        echo "Skipping template injection commit"
+                        env.RUN_MODE = "false"
+                        return
+                    }
+    
+                    // ✅ Feature branch → CI only
+                    if (env.BRANCH_NAME.startsWith("feature/")) {
+                        echo "Feature branch → CI only"
+                        env.RUN_MODE = "ci"
+                        return
+                    }
+    
+                    // ✅ Main branch → CI + CD
+                    if (env.BRANCH_NAME == "main") {
+                        echo "Main branch → CI + CD"
+                        env.RUN_MODE = "cd"
+                        return
+                    }
+    
+                    // ❌ Others skip
                     env.RUN_MODE = "false"
-                    return
-                }
-
-                // ✅ Feature branch → CI only
-                if (env.BRANCH_NAME.startsWith("feature/")) {
-                    echo "Feature branch → CI only"
-                    env.RUN_MODE = "ci"
-                    return
-                }
-
-                // ✅ Main branch → CI + CD
-                if (env.BRANCH_NAME == "main") {
-                    echo "Main branch → CI + CD"
-                    env.RUN_MODE = "cd"
-                    return
-                }
-
-                // ❌ Others skip
-                env.RUN_MODE = "false"
-            }
-        }
-    }
-
-    stage('Stop Pipeline') {
-        when {
-            expression { env.RUN_MODE == "false" }
-        }
-        steps {
-            script {
-                echo "Stopping pipeline"
-                currentBuild.result = 'SUCCESS'
-                error("Pipeline intentionally stopped")
-            }
-        }
-    }
-
-    // ================= CI STAGES =================
-
-    stage('Install Dependencies') {
-        when {
-            expression { env.RUN_MODE == "ci" || env.RUN_MODE == "cd" }
-        }
-        steps {
-            script {
-                if (fileExists('package.json')) {
-                    sh 'npm install'
-                } else {
-                    echo "No package.json found"
                 }
             }
         }
-    }
-
-    stage('Run Tests') {
-        when {
-            expression { env.RUN_MODE == "ci" || env.RUN_MODE == "cd" }
+    
+        stage('Stop Pipeline') {
+            when {
+                expression { env.RUN_MODE == "false" }
+            }
+            steps {
+                script {
+                    echo "Stopping pipeline"
+                    currentBuild.result = 'SUCCESS'
+                    error("Pipeline intentionally stopped")
+                }
+            }
         }
-        steps {
-            script {
-                if (fileExists('package.json')) {
-                    sh 'npm test || true'
-                } else {
-                    echo "Skipping tests"
+    
+        // ================= CI STAGES =================
+    
+        stage('Install Dependencies') {
+            when {
+                expression { env.RUN_MODE == "ci" || env.RUN_MODE == "cd" }
+            }
+            steps {
+                script {
+                    if (fileExists('package.json')) {
+                        sh 'npm install'
+                    } else {
+                        echo "No package.json found"
+                    }
+                }
+            }
+        }
+    
+        stage('Run Tests') {
+            when {
+                expression { env.RUN_MODE == "ci" || env.RUN_MODE == "cd" }
+            }
+            steps {
+                script {
+                    if (fileExists('package.json')) {
+                        sh 'npm test || true'
+                    } else {
+                        echo "Skipping tests"
+                    }
+                }
+            }
+        }
+    
+        stage('Build Docker Image') {
+            when {
+                expression { env.RUN_MODE == "ci" || env.RUN_MODE == "cd" }
+            }
+            steps {
+                sh 'docker build -t ${IMAGE_TAG} .'
+            }
+        }
+    
+        // ================= CD STAGES =================
+    
+        stage('Login to Docker Hub') {
+            when {
+                expression { env.RUN_MODE == "cd" }
+            }
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'dockerhub-credentials',
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASS'
+                )]) {
+                    sh 'echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin'
+                }
+            }
+        }
+    
+        stage('Push Docker Image') {
+            when {
+                expression { env.RUN_MODE == "cd" }
+            }
+            steps {
+                sh 'docker push ${IMAGE_TAG}'
+            }
+        }
+    
+        stage('Update GitOps Repo') {
+            when {
+                expression { env.RUN_MODE == "cd" }
+            }
+            steps {
+                withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
+                    sh '''
+                    rm -rf k8s-manifests
+    
+                    git clone --depth 1 https://${GITHUB_TOKEN}@github.com/BackstageSSPPoC/k8s-manifests.git
+                    cd k8s-manifests
+    
+                    mkdir -p apps/${APP_NAME}
+    
+                    cp -r ../manifest-templates/* apps/${APP_NAME}/ || true
+    
+                    sed -i "s|\\${APP_NAME}|${APP_NAME}|g" apps/${APP_NAME}/*.yaml || true
+                    sed -i "s|\\${DOCKER_IMAGE}|${IMAGE_TAG}|g" apps/${APP_NAME}/deployment.yaml || true
+    
+                    git config user.email "jenkins@local"
+                    git config user.name "jenkins"
+    
+                    git add .
+                    git commit -m "Deploy ${APP_NAME} build ${BUILD_NUMBER}" || echo "No changes"
+    
+                    git push origin main
+                    '''
                 }
             }
         }
     }
-
-    stage('Build Docker Image') {
-        when {
-            expression { env.RUN_MODE == "ci" || env.RUN_MODE == "cd" }
-        }
-        steps {
-            sh 'docker build -t ${IMAGE_TAG} .'
-        }
-    }
-
-    // ================= CD STAGES =================
-
-    stage('Login to Docker Hub') {
-        when {
-            expression { env.RUN_MODE == "cd" }
-        }
-        steps {
-            withCredentials([usernamePassword(
-                credentialsId: 'dockerhub-credentials',
-                usernameVariable: 'DOCKER_USER',
-                passwordVariable: 'DOCKER_PASS'
-            )]) {
-                sh 'echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin'
-            }
-        }
-    }
-
-    stage('Push Docker Image') {
-        when {
-            expression { env.RUN_MODE == "cd" }
-        }
-        steps {
-            sh 'docker push ${IMAGE_TAG}'
-        }
-    }
-
-    stage('Update GitOps Repo') {
-        when {
-            expression { env.RUN_MODE == "cd" }
-        }
-        steps {
-            withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
-                sh '''
-                rm -rf k8s-manifests
-
-                git clone --depth 1 https://${GITHUB_TOKEN}@github.com/BackstageSSPPoC/k8s-manifests.git
-                cd k8s-manifests
-
-                mkdir -p apps/${APP_NAME}
-
-                cp -r ../manifest-templates/* apps/${APP_NAME}/ || true
-
-                sed -i "s|\\${APP_NAME}|${APP_NAME}|g" apps/${APP_NAME}/*.yaml || true
-                sed -i "s|\\${DOCKER_IMAGE}|${IMAGE_TAG}|g" apps/${APP_NAME}/deployment.yaml || true
-
-                git config user.email "jenkins@local"
-                git config user.name "jenkins"
-
-                git add .
-                git commit -m "Deploy ${APP_NAME} build ${BUILD_NUMBER}" || echo "No changes"
-
-                git push origin main
-                '''
-            }
+    
+    post {
+        always {
+            sh "docker logout || true"
+            sh "docker image prune -f || true"
         }
     }
 }
 
-post {
-    always {
-        sh "docker logout || true"
-        sh "docker image prune -f || true"
-    }
-}
-```
 
-}
